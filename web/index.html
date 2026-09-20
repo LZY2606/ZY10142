@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>离线录波对时复盘</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #f5f7fb; color: #172033; }
+    header { padding: 20px 28px; background: #13233a; color: white; }
+    header p { margin: 6px 0 0; color: #b9c8dc; }
+    main { padding: 20px 28px 40px; display: grid; gap: 18px; }
+    .grid { display: grid; grid-template-columns: 1.35fr .65fr; gap: 18px; align-items: start; }
+    section, .card { background: white; border: 1px solid #d9e0ea; border-radius: 10px; padding: 16px; box-shadow: 0 1px 2px #1a2b4a14; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 8px 9px; border-bottom: 1px solid #e7ebf2; text-align: left; vertical-align: top; }
+    th { color: #536276; background: #f8fafc; font-weight: 650; }
+    .pill { display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 12px; background: #eef4ff; color: #24549c; }
+    .pill.published { background: #e8f7ef; color: #18713c; }
+    .pill.candidate { background: #fff4dc; color: #915b00; }
+    .unknown { color: #b23b3b; font-weight: 650; }
+    .muted { color: #65748a; }
+    .timeline { position: relative; height: 240px; overflow: hidden; border-top: 1px solid #dbe2ec; border-bottom: 1px solid #dbe2ec; margin-top: 12px; }
+    .lane { position: relative; height: 48px; border-bottom: 1px dashed #e2e7f0; }
+    .lane-label { position: absolute; left: 0; top: 14px; width: 110px; font-size: 12px; font-weight: 650; }
+    .event { position: absolute; width: 10px; height: 10px; border-radius: 50%; background: #2b6cb0; transform: translateX(-5px); }
+    .event::after { content: attr(data-label); position: absolute; left: 12px; top: -8px; white-space: nowrap; font-size: 11px; color: #405066; }
+    .uncertainty { position: absolute; height: 3px; background: #2b6cb055; transform: translateY(3px); }
+    label { display: grid; gap: 4px; font-size: 12px; color: #536276; margin-bottom: 8px; }
+    input, select, textarea, button { font: inherit; }
+    input, select, textarea { border: 1px solid #c8d1df; border-radius: 7px; padding: 7px 8px; }
+    textarea { min-height: 180px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    button { border: 0; border-radius: 7px; padding: 8px 12px; background: #2563a5; color: white; cursor: pointer; }
+    button.secondary { background: #617086; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .notice { padding: 10px 12px; border-radius: 8px; background: #f0f6ff; border: 1px solid #c9def8; font-size: 13px; }
+    .error { background: #fff0f0; border-color: #efb6b6; color: #912727; }
+    code { background: #f0f3f8; padding: 1px 4px; border-radius: 4px; }
+    @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<header>
+  <h1>离线录波对时复盘</h1>
+  <p>仅用于离线工程复盘，不向真实变电站下发控制。时间单位均为纳秒。</p>
+</header>
+<main>
+  <div class="notice">校正时间来自分段线性时钟模型；不确定区间重叠的事件显示为“无法比较”，不会用设备 ID 强行排序。</div>
+  <div id="message" class="notice" hidden></div>
+
+  <div class="grid">
+    <section>
+      <div class="row" style="justify-content: space-between">
+        <h2>事件与时线</h2>
+        <select id="version"></select>
+      </div>
+      <div id="timeline" class="timeline"></div>
+      <div style="margin-top:14px; overflow:auto">
+        <table>
+          <thead><tr><th>装置</th><th>事件</th><th>原本地时</th><th>校正时间</th><th>不确定区间</th><th>相对下一可判定事件</th></tr></thead>
+          <tbody id="events"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>归属与版本</h2>
+      <table>
+        <thead><tr><th>记录</th><th>扰动</th><th>状态</th></tr></thead>
+        <tbody id="memberships"></tbody>
+      </table>
+      <p class="muted">同一条记录可在多个未决候选中并存；发布后只能归属于一个扰动。已发布版本不可修改。</p>
+    </section>
+  </div>
+
+  <section>
+    <h2>生成新对时版本</h2>
+    <p class="muted">修改锚点不会覆盖旧版本。可把某个分段的 <code>trusted</code> 改为 <code>false</code> 以标记不可信锚点；固定 fixture 中未覆盖事件的不可信模型不能发布。</p>
+    <div class="grid">
+      <div>
+        <label>扰动 ID<input id="disturbanceId"></label>
+        <label>记录 ID（逗号分隔）<input id="recordIds"></label>
+        <label>说明<input id="note"></label>
+      </div>
+      <div>
+        <label>分段 JSON<textarea id="segments"></textarea></label>
+        <div class="row"><button id="publish">发布新版本</button><button class="secondary" id="prefill">复制当前分段</button></div>
+      </div>
+    </div>
+  </section>
+</main>
+<script>
+let state = null;
+let selectedVersion = null;
+const $ = (id) => document.getElementById(id);
+const ns = (value) => value === null || value === undefined ? "—" : Number(value).toLocaleString("en-US");
+const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[char]));
+
+async function load() {
+  const response = await fetch("/api/state");
+  state = await response.json();
+  render();
+}
+
+function currentVersion() {
+  return state.versions.find(v => v.id === selectedVersion) || state.versions[state.versions.length - 1];
+}
+
+function render() {
+  renderVersions();
+  renderMemberships();
+  renderEventsAndTimeline();
+}
+
+function renderVersions() {
+  const select = $("version");
+  const current = currentVersion();
+  select.innerHTML = state.versions.map(v => `<option value="${esc(v.id)}">${esc(findDisturbance(v.disturbance_id)?.code || v.disturbance_id)} v${v.version_no}</option>`).join("");
+  if (current) select.value = current.id;
+}
+
+function renderMemberships() {
+  $("memberships").innerHTML = state.memberships.map(m => `<tr>
+    <td>${esc(findRecord(m.record_id)?.source_name || m.record_id)}</td>
+    <td>${esc(findDisturbance(m.disturbance_id)?.code || m.disturbance_id)}</td>
+    <td><span class="pill ${esc(m.status)}">${m.status === "published" ? "已发布" : "未决候选"}</span></td>
+  </tr>`).join("");
+}
+
+function renderEventsAndTimeline() {
+  const version = currentVersion();
+  const selectedRecords = new Set(version.record_ids || []);
+  const events = [];
+  for (const event of state.events.filter(e => selectedRecords.has(e.record_id))) {
+    const timing = version?.timings.find(t => t.event_id === event.id);
+    events.push({ event, timing });
+  }
+  events.sort((a,b) => (a.timing?.corrected_ns ?? Number.MAX_SAFE_INTEGER) - (b.timing?.corrected_ns ?? Number.MAX_SAFE_INTEGER) || a.event.local_ns - b.event.local_ns);
+  const relations = new Set();
+  const timed = events.filter(item => item.timing);
+  timed.forEach((item, index) => timed.slice(index + 1).forEach(candidate => {
+    if (item.timing.max_ns < candidate.timing.min_ns) relations.add(item.event.id + ">" + candidate.event.id);
+  }));
+  $("events").innerHTML = events.map((item, index) => {
+    const next = events.slice(index + 1).find(candidate => candidate.timing && relations.has(item.event.id + ">" + candidate.event.id));
+    return `<tr>
+      <td>${esc(findDevice(item.event.device_id)?.code)}</td>
+      <td>${esc(item.event.label)}<div class="muted">${esc(item.event.event_type)}</div></td>
+      <td>${ns(item.event.local_ns)}</td>
+      <td>${item.timing ? ns(item.timing.corrected_ns) : "<span class='unknown'>未校正（锚点不可信）</span>"}</td>
+      <td>${item.timing ? `${ns(item.timing.min_ns)} – ${ns(item.timing.max_ns)}` : "—"}</td>
+      <td>${next ? "先于 " + esc(next.event.label) : (item.timing ? "<span class='unknown'>对部分事件无法比较</span>" : "—")}</td>
+    </tr>`;
+  }).join("");
+  renderTimeline(timed);
+}
+
+function renderTimeline(events) {
+  if (!events.length) {
+    $("timeline").innerHTML = "<div class='lane-label'>该版本没有可信校正时</div>";
+    return;
+  }
+  const devices = Array.from(new Set(events.map(item => item.event.device_id)));
+  const min = Math.min(...events.map(item => item.timing.min_ns));
+  const max = Math.max(...events.map(item => item.timing.max_ns));
+  const span = Math.max(1, max - min);
+  $("timeline").innerHTML = devices.map(device => {
+    const items = events.filter(item => item.event.device_id === device);
+    return `<div class="lane"><div class="lane-label">${esc(findDevice(device)?.code || device)}</div>${items.map(item => {
+      const left = 110 + ((item.timing.min_ns - min) / span) * (window.innerWidth - 180);
+      const width = Math.max(2, ((item.timing.max_ns - item.timing.min_ns) / span) * (window.innerWidth - 180));
+      const dot = 110 + ((item.timing.corrected_ns - min) / span) * (window.innerWidth - 180);
+      return `<div class="uncertainty" style="left:${left}px;width:${width}px"></div><div class="event" data-label="${esc(item.event.label)}" style="left:${dot}px"></div>`;
+    }).join("")}</div>`;
+  }).join("");
+}
+
+function findDevice(id) { return state.devices.find(d => d.id === id); }
+function findRecord(id) { return state.records.find(r => r.id === id); }
+function findDisturbance(id) { return state.disturbances.find(d => d.id === id); }
+
+$("version").addEventListener("change", () => { selectedVersion = $("version").value; renderEventsAndTimeline(); });
+$("prefill").addEventListener("click", () => {
+  const version = currentVersion();
+  $("disturbanceId").value = version.disturbance_id;
+  $("recordIds").value = (version.record_ids || []).join(",");
+  $("segments").value = JSON.stringify(version.segments.map(s => ({
+    device_id: s.device_id, start_event_id: s.start_event_id, end_event_id: s.end_event_id,
+    start_corrected_ns: s.start_corrected_ns, end_corrected_ns: s.end_corrected_ns,
+    start_radius_ns: s.start_radius_ns, end_radius_ns: s.end_radius_ns, trusted: s.trusted
+  })), null, 2);
+  $("note").value = "Edited anchors: " + new Date().toISOString();
+});
+$("publish").addEventListener("click", async () => {
+  const body = {
+    disturbance_id: $("disturbanceId").value.trim(),
+    note: $("note").value,
+    record_ids: $("recordIds").value.split(",").map(v => v.trim()).filter(Boolean),
+    segments: JSON.parse($("segments").value)
+  };
+  const response = await fetch("/api/publish-alignment", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const result = await response.json();
+  const message = $("message");
+  message.hidden = false;
+  message.className = "notice " + (response.ok ? "" : "error");
+  message.textContent = response.ok ? "已发布新的不可变对时版本。" : (result.error || "发布失败");
+  if (response.ok) { selectedVersion = result.id; await load(); }
+});
+load();
+</script>
+</body>
+</html>
