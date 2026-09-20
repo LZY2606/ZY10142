@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pair-wiseGSB 离线录波复盘</title>
+<style>
+:root{color-scheme:light;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f5f7fb;color:#172033}
+body{margin:0}.top{padding:20px 26px;background:#10213d;color:#fff}.top h1{margin:0;font-size:22px}.top p{margin:6px 0 0;color:#b9c7dc}
+.wrap{padding:20px;display:grid;grid-template-columns:minmax(0,1.2fr) minmax(380px,.8fr);gap:16px}.card{background:#fff;border:1px solid #e1e6f0;border-radius:12px;padding:16px;box-shadow:0 8px 28px #182a4a12}
+h2{font-size:16px;margin:0 0 12px}h3{font-size:14px;margin:16px 0 8px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.full{grid-column:1/-1}label{font-size:12px;color:#586478;display:block;margin-bottom:4px}
+input,textarea,select{width:100%;box-sizing:border-box;border:1px solid #ccd4e1;border-radius:8px;padding:8px;font:inherit;background:#fff}textarea{min-height:70px}button{border:0;border-radius:8px;background:#2563eb;color:#fff;padding:8px 12px;font-weight:600;cursor:pointer}button.secondary{background:#e8eef9;color:#1e3a70}.danger{background:#b91c1c}button:disabled{opacity:.5}
+table{border-collapse:collapse;width:100%;font-size:12px}th,td{border-bottom:1px solid #e7ebf2;padding:7px 6px;text-align:left;vertical-align:top}th{color:#5d6a80;font-weight:700;background:#f8fafc}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}.tag{display:inline-block;border-radius:999px;padding:2px 8px;font-size:11px;font-weight:700}.ok{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}.bad{background:#fee2e2;color:#991b1b}.muted{color:#788397}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.error{white-space:pre-wrap;color:#991b1b}.small{font-size:12px}.axis{border-left:2px solid #cbd5e1;margin-left:10px}.event{position:relative;margin:0 0 12px 20px}.dot{position:absolute;left:-27px;top:3px;width:12px;height:12px;border-radius:50%;background:#2563eb;border:2px solid #fff;box-shadow:0 0 0 1px #2563eb}.interval{height:5px;background:#93c5fd;border-radius:99px;margin:4px 0}.seg{border-left:3px dashed #94a3b8;padding-left:8px;margin:8px 0;color:#64748b;font-size:11px}
+</style>
+</head>
+<body>
+<header class="top"><h1>Pair-wiseGSB 离线录波复盘</h1><p>仅用于离线工程复盘；不向真实变电站下发控制。</p></header>
+<main class="wrap">
+<section class="card">
+  <div class="row" style="justify-content:space-between"><h2>案例与候选因果顺序</h2><button class="secondary" onclick="load()">刷新</button></div>
+  <select id="caseSelect" onchange="render()"></select>
+  <div id="caseMeta" class="small" style="margin:10px 0"></div>
+  <h3>版本时间线</h3><div id="versions"></div>
+</section>
+<aside class="card">
+  <h2>工程操作</h2>
+  <details open><summary>导入脱敏录波 JSON</summary><textarea id="importJson" placeholder='{"records":[...]}'></textarea><p><button onclick="post('/api/records/import',json('importJson'))">导入（设备+指纹去重）</button></p></details>
+  <details><summary>创建扰动案例 / 增加候选</summary><div class="grid"><div class="full"><label>案例名</label><input id="caseName"></div><div class="full"><label>说明</label><input id="caseDesc"></div><div class="full"><label>记录 ID（逗号分隔）</label><input id="caseRecords"></div></div><p><button onclick="createCase()">创建案例</button> <button class="secondary" onclick="assignCandidates()">加入当前案例</button></p></details>
+  <details open><summary>保存同步锚点</summary><div class="grid"><div><label>锚点 key</label><input id="anchorKey" value="feature"></div><div><label>校正时间 ns</label><input id="anchorTime" type="number" value="1000000000"></div><div><label>不确定半径 ns</label><input id="anchorUnc" type="number" value="4"></div><div class="full"><label>标签</label><input id="anchorLabel" value="共同频率下陷"></div><div class="full"><label>事件引用 recordId:eventKey，逗号分隔</label><input id="anchorRefs"></div><div class="row"><label><input style="width:auto" id="anchorTrusted" type="checkbox" checked>可信锚点</label></div></div><p><button onclick="saveAnchor()">保存为新锚点版本数据</button></p></details>
+  <details open><summary>生成 / 发布对时版本</summary><label>各设备校时跳变 local ns，例如 {"REL-B":[1500000000]}</label><input id="jumps" value='{"REL-B":[1500000000]}'><p><button onclick="createVersion()">生成新版本</button></p><label>评审结论</label><input id="reviewText"><p><button class="secondary" onclick="addReview()">保存评审</button> <button class="danger" onclick="publishVersion()">发布当前最新版本</button></p></details>
+  <h3>系统消息</h3><pre id="output" class="small"></pre>
+</aside>
+</main>
+<script>
+let state={records:[],events:[],cases:[]}, selectedCase=null, selectedVersion=null;
+const $=id=>document.getElementById(id), esc=v=>String(v??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function short(id){return String(id).slice(-8)}
+function json(id){try{return JSON.parse($(id).value||'{}')}catch(e){throw new Error('JSON 解析失败: '+e.message)}} 
+async function post(path,data){try{const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const v=await r.json();if(!r.ok)throw new Error(v.error||r.statusText);$('output').textContent=JSON.stringify(v,null,2);await load()}catch(e){$('output').className='error';$('output').textContent=e.message}}
+async function load(){const r=await fetch('/api/state');state=await r.json();$('output').className='small';render()}
+function fmt(ns){const value=BigInt(ns);return (value/1000000n)+' ms'}
+function render(){const sel=$('caseSelect');if(!selectedCase&&state.cases[0])selectedCase=state.cases[0].caseId;sel.innerHTML=state.cases.map(c=>`<option value="${c.caseId}" ${c.caseId===selectedCase?'selected':''}>#${c.caseId} ${esc(c.name)}</option>`).join('');const c=state.cases.find(x=>x.caseId===selectedCase);if(!c){$('versions').innerHTML='';return}
+$('caseMeta').innerHTML=`候选 ${c.candidate_record_ids.length} 条；已发布 ${c.published_record_ids.length} 条。未决候选可与其他案例并存。<br><span class="mono">${esc(c.candidate_record_ids.join(', '))}</span>`;
+$('versions').innerHTML=c.versions.map(v=>renderVersion(c,v)).join('');if(!c.versions.some(v=>v.versionId===selectedVersion))selectedVersion=c.versions.at(-1)?.versionId??null}
+function eventById(id){return state.events.find(e=>e.eventId===id)}
+function renderVersion(c,v){const rows=v.timeline.map(t=>{const e=t.event;return `<tr><td><button class="secondary" onclick="useRef('${esc(e.recordId)}','${esc(e.key)}')">引用</button></td><td>${esc(e.deviceId)} <span class="muted">(${short(e.recordId)})</span><br><span class="muted">${esc(e.label||e.kind)}</span></td><td class="mono">${fmt(e.localTimeNs)}</td><td class="mono">${fmt(t.correctedTimeNs)}<br><span class="muted">[${fmt(t.lowNs)}, ${fmt(t.highNs)}]</span></td><td>seg ${t.segmentIndex+1}</td></tr>`}).join('');
+const incomparable=v.pairRelations.filter(p=>p.relation==='incomparable').length;const pairs=v.pairRelations.slice(0,18).map(p=>{const a=eventById(p.leftEventId),b=eventById(p.rightEventId);const cls=p.relation==='before'?'ok':p.relation==='incomparable'?'warn':'bad';return `<span class="tag ${cls}">${esc(a.deviceId)}:${esc(a.key)} ${p.relation==='before'?'→':p.relation==='after'?'←':'~'} ${esc(b.deviceId)}:${esc(b.key)}</span>`}).join(' ');
+const segments=v.segments.map(s=>`<div class="seg">${esc(s.deviceId)} seg: [${s.startNs??'-∞'},${s.endNs??'+∞'}) slope=${esc(s.slopeNum)}/${esc(s.slopeDen)} ±${s.uncertaintyNs}ns</div>`).join('');
+const reviews=v.reviews.map(r=>`<li>${esc(r.conclusion)}</li>`).join('')||'<li class="muted">暂无</li>';
+return `<div class="card" style="box-shadow:none;margin:10px 0;padding:12px"><div class="row"><input type="radio" name="version" ${v.versionId===selectedVersion?'checked':''} onchange="selectVersion(${v.versionId})"><strong>v${v.versionNo}</strong><span class="tag ${v.published?'ok':'warn'}">${v.published?'已发布':'未发布'}</span><span class="muted">${esc(v.note)}</span></div><h3>原时间 / 校正时间 / 不确定区间</h3><table><thead><tr><th></th><th>装置事件</th><th>原时间</th><th>校正时间</th><th>分段</th></tr></thead><tbody>${rows}</tbody></table><h3>分段线性时钟</h3>${segments}<h3>候选因果偏序</h3><p class="small">共 ${v.pairRelations.length} 对，其中 ${incomparable} 对因区间重叠标记为 <b>incomparable</b>；不会用设备 ID 打破不确定。</p><div class="row">${pairs}</div><h3>可重放复盘结论</h3><ul>${reviews}</ul></div>`}
+function useRef(recordId,key){const current=$('anchorRefs').value.split(',').map(x=>x.trim()).filter(Boolean);current.push(recordId+':'+key);$('anchorRefs').value=current.join(',')}
+function selectVersion(id){selectedVersion=id;render()}
+function createCase(){post('/api/cases',{name:$('caseName').value,description:$('caseDesc').value,recordIds:splitIds('caseRecords')})}
+function assignCandidates(){post(`/api/cases/${selectedCase}/candidates`,{recordIds:splitIds('caseRecords')})}
+function splitIds(id){return $(id).value.split(',').map(x=>x.trim()).filter(Boolean)}
+function saveAnchor(){const refs=$('anchorRefs').value.split(',').map(x=>{const [recordId,eventKey]=x.split(':');return{recordId,eventKey}});post('/api/anchors',{anchorKey:$('anchorKey').value,label:$('anchorLabel').value,correctedTimeNs:Number($('anchorTime').value),uncertaintyNs:Number($('anchorUnc').value),trusted:$('anchorTrusted').checked,eventRefs:refs})}
+function createVersion(){post(`/api/cases/${selectedCase}/versions`,{note:'页面生成的新版本',jumpsByDevice:json('jumps')})}
+function addReview(){post(`/api/versions/${selectedVersion}/reviews`,{conclusion:$('reviewText').value})}
+function publishVersion(){post(`/api/versions/${selectedVersion}/publish`,{})}
+load();
+</script>
+</body></html>
